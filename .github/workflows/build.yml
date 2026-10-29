@@ -14,9 +14,20 @@ jobs:
         run: unzip -q app.zip -d proj
       - name: Restore fixed debug key (keeps updates installable)
         run: |
-          if [ -f debug.keystore.b64 ]; then
+          KEY_B64=""
+          if [ -f .android/debug.keystore.b64 ]; then
+            KEY_B64=".android/debug.keystore.b64"
+          elif [ -f .android/debug.keystore/debug.keystore.b64 ]; then
+            KEY_B64=".android/debug.keystore/debug.keystore.b64"
+          elif [ -f debug.keystore.b64 ]; then
+            KEY_B64="debug.keystore.b64"
+          fi
+          if [ -n "$KEY_B64" ]; then
             mkdir -p "$HOME/.android"
-            base64 -d debug.keystore.b64 > "$HOME/.android/debug.keystore"
+            base64 -d "$KEY_B64" > "$HOME/.android/debug.keystore"
+            echo "Restored keystore from $KEY_B64"
+          else
+            echo "Warning: no debug.keystore.b64 found"
           fi
       - name: Install Gradle 8.14.2
         run: |
