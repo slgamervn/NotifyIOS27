@@ -37,6 +37,16 @@ jobs:
       - name: Build debug APK
         working-directory: proj
         run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Find and rename debug APK
+        run: |
+          APK=$(find proj/app/build/outputs/apk/debug -name "*.apk" | head -1)
+          if [ -n "$APK" ]; then
+            mv "$APK" proj/app/build/outputs/apk/debug/notifyIOS27-debug.apk
+            echo "Renamed to notifyIOS27-debug.apk"
+          else
+            echo "No debug APK found"
+            exit 1
+          fi
       - uses: actions/upload-artifact@v6
         with:
           name: notifyIOS27-apk
@@ -46,6 +56,14 @@ jobs:
         continue-on-error: true
         working-directory: proj
         run: gradle assembleRelease --no-daemon --stacktrace
+      - name: Find and rename release APK
+        if: steps.rel.outcome == 'success'
+        run: |
+          APK=$(find proj/app/build/outputs/apk/release -name "*.apk" | head -1)
+          if [ -n "$APK" ]; then
+            mv "$APK" proj/app/build/outputs/apk/release/notifyIOS27-release.apk
+            echo "Renamed to notifyIOS27-release.apk"
+          fi
       - uses: actions/upload-artifact@v6
         if: steps.rel.outcome == 'success'
         with:
@@ -56,6 +74,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          FILES="proj/app/build/outputs/apk/debug/notifyIOS27-debug.apk"
+          FILES=""
+          if [ -f proj/app/build/outputs/apk/debug/notifyIOS27-debug.apk ]; then FILES="$FILES proj/app/build/outputs/apk/debug/notifyIOS27-debug.apk"; fi
           if [ -f proj/app/build/outputs/apk/release/notifyIOS27-release.apk ]; then FILES="$FILES proj/app/build/outputs/apk/release/notifyIOS27-release.apk"; fi
+          if [ -z "$FILES" ]; then echo "No APK to publish"; exit 0; fi
           gh release create "build-${{ github.run_number }}" $FILES --title "notifyIOS27 build ${{ github.run_number }}" --notes "Debug and release APK"
