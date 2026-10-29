@@ -40,12 +40,16 @@ jobs:
       - name: Find and rename debug APK
         run: |
           APK=$(find proj/app/build/outputs/apk/debug -name "*.apk" | head -1)
-          if [ -n "$APK" ]; then
-            mv "$APK" proj/app/build/outputs/apk/debug/notifyIOS27-debug.apk
-            echo "Renamed to notifyIOS27-debug.apk"
-          else
+          if [ -z "$APK" ]; then
             echo "No debug APK found"
             exit 1
+          fi
+          TARGET="proj/app/build/outputs/apk/debug/notifyIOS27-debug.apk"
+          if [ "$APK" != "$TARGET" ]; then
+            mv "$APK" "$TARGET"
+            echo "Renamed to notifyIOS27-debug.apk"
+          else
+            echo "Already named notifyIOS27-debug.apk"
           fi
       - uses: actions/upload-artifact@v6
         with:
@@ -61,8 +65,13 @@ jobs:
         run: |
           APK=$(find proj/app/build/outputs/apk/release -name "*.apk" | head -1)
           if [ -n "$APK" ]; then
-            mv "$APK" proj/app/build/outputs/apk/release/notifyIOS27-release.apk
-            echo "Renamed to notifyIOS27-release.apk"
+            TARGET="proj/app/build/outputs/apk/release/notifyIOS27-release.apk"
+            if [ "$APK" != "$TARGET" ]; then
+              mv "$APK" "$TARGET"
+              echo "Renamed to notifyIOS27-release.apk"
+            else
+              echo "Already named notifyIOS27-release.apk"
+            fi
           fi
       - uses: actions/upload-artifact@v6
         if: steps.rel.outcome == 'success'
