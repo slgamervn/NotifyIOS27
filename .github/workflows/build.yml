@@ -112,8 +112,10 @@ jobs:
           test -s dist/notifyIOS27-debug.apk
           test -s dist/notifyIOS27-release.apk
 
-      - name: Verify package identity and update signing
+      - name: Verify APK signatures and update continuity
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -129,55 +131,116 @@ jobs:
             exit 1
           fi
 
-          DEBUG_APK="dist/notifyIOS27-debug.apk"
-          RELEASE_APK="dist/notifyIOS27-release.apk"
-
-          "$APKSIGNER" verify --verbose "$DEBUG_APK"
-          "$APKSIGNER" verify --verbose "$RELEASE_APK"
-
-          DEBUG_CERT="$("$APKSIGNER" verify --print-certs "$DEBUG_APK" 2>&1 | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1)"
-          RELEASE_CERT="$("$APKSIGNER" verify --print-certs "$RELEASE_APK" 2>&1 | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1)"
-          if [ -z "$DEBUG_CERT" ] || [ -z "$RELEASE_CERT" ] || [ "$DEBUG_CERT" != "$RELEASE_CERT" ]; then
-            echo "::error::Debug and release APKs do not share the established signing certificate. Refusing to publish incompatible updates."
-            exit 1
-          fi
-
-          DEBUG_BADGING="$("$AAPT" dump badging "$DEBUG_APK")"
-          RELEASE_BADGING="$("$AAPT" dump badging "$RELEASE_APK")"
           read_manifest_value() {
             local badging="$1"
             local field="$2"
-            printf '%s\n' "$badging" | sed -n "s/^package:.*${field}='\([^']*\)'.*/\1/p" | head -n 1
+            printf '%s\n' "$badging" | sed -n "s/^package:.*${field}='\\([^']*\\)'.*/\\1/p" | head -n 1
           }
 
-          DEBUG_APP_ID="$(read_manifest_value "$DEBUG_BADGING" name)"
-          RELEASE_APP_ID="$(read_manifest_value "$RELEASE_BADGING" name)"
-          DEBUG_VERSION_CODE="$(read_manifest_value "$DEBUG_BADGING" versionCode)"
-          RELEASE_VERSION_CODE="$(read_manifest_value "$RELEASE_BADGING" versionCode)"
-          DEBUG_VERSION_NAME="$(read_manifest_value "$DEBUG_BADGING" versionName)"
-          RELEASE_VERSION_NAME="$(read_manifest_value "$RELEASE_BADGING" versionName)"
+          verify_track() {
+            local track="$1"
+            local apk="$2"
+            local asset_name="$3"
+            local previous_dir="previous/$track"
 
-          if [ -z "$DEBUG_APP_ID" ] || [ -z "$DEBUG_VERSION_CODE" ] || [ -z "$DEBUG_VERSION_NAME" ]; then
-            echo "::error::Could not read package metadata from the debug APK."
-            exit 1
-          fi
-          if [ "$DEBUG_APP_ID" != "$RELEASE_APP_ID" ] ||
-             [ "$DEBUG_VERSION_CODE" != "$RELEASE_VERSION_CODE" ] ||
-             [ "$DEBUG_VERSION_NAME" != "$RELEASE_VERSION_NAME" ]; then
-            echo "::error::Debug and release APK metadata differ. Check applicationId and version configuration."
-            exit 1
-          fi
-          if ! [[ "$DEBUG_VERSION_CODE" =~ ^[0-9]+$ ]] || [ "$DEBUG_VERSION_CODE" -lt 1 ]; then
-            echo "::error::The APK versionCode is invalid."
-            exit 1
-          fi
+            echo "::group::Verify $track APK"
+            "$APKSIGNER" verify --verbose "$apk"
+            local certificate_output
+            certificate_output="$("$APKSIGNER" verify --print-certs "$apk" 2>&1)"
+            printf '%s\n' "$certificate_output"
+            local certificate
+            certificate="$(printf '%s\n' "$certificate_output" | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1)"
+            if [ -z "$certificate" ]; then
+              echo "::error::$track APK has no readable SHA-256 signing-certificate fingerprint."
+              exit 1
+            fi
 
-          {
-            echo "applicationId=$DEBUG_APP_ID"
-            echo "versionCode=$DEBUG_VERSION_CODE"
-            echo "versionName=$DEBUG_VERSION_NAME"
-            echo "signingCertificateSha256=$DEBUG_CERT"
-          } >> "$GITHUB_STEP_SUMMARY"
+            local badging
+            badging="$("$AAPT" dump badging "$apk")"
+            local app_id
+            local version_code
+            local version_name
+            app_id="$(read_manifest_value "$badging" name)"
+            version_code="$(read_manifest_value "$badging" versionCode)"
+            version_name="$(read_manifest_value "$badging" versionName)"
+
+            if [ -z "$app_id" ] || [ -z "$version_code" ] || [ -z "$version_name" ]; then
+              echo "::error::Could not read $track APK package metadata."
+              exit 1
+            fi
+            if ! [[ "$version_code" =~ ^[0-9]+$ ]] || [ "$version_code" -lt 1 ]; then
+              echo "::error::$track APK versionCode is invalid: $version_code"
+              exit 1
+            fi
+
+            echo "$track applicationId: $app_id"
+            echo "$track versionCode: $version_code"
+            echo "$track versionName: $version_name"
+            echo "$track signingCertificateSha256: $certificate"
+
+            if gh release view --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              mkdir -p "$previous_dir"
+              if ! gh release download --repo "$GITHUB_REPOSITORY" --pattern "$asset_name" --dir "$previous_dir"; then
+                echo "::error::Could not download the previous $track APK for update-compatibility verification."
+                exit 1
+              fi
+
+              local previous_apk="$previous_dir/$asset_name"
+              if [ ! -s "$previous_apk" ]; then
+                echo "::error::The previous $track APK asset is missing or empty."
+                exit 1
+              fi
+
+              "$APKSIGNER" verify --verbose "$previous_apk"
+              local previous_certificate_output
+              previous_certificate_output="$("$APKSIGNER" verify --print-certs "$previous_apk" 2>&1)"
+              local previous_certificate
+              previous_certificate="$(printf '%s\n' "$previous_certificate_output" | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1)"
+              local previous_badging
+              previous_badging="$("$AAPT" dump badging "$previous_apk")"
+              local previous_app_id
+              local previous_version_code
+              previous_app_id="$(read_manifest_value "$previous_badging" name)"
+              previous_version_code="$(read_manifest_value "$previous_badging" versionCode)"
+
+              if [ -z "$previous_certificate" ] || [ -z "$previous_app_id" ] ||
+                 ! [[ "$previous_version_code" =~ ^[0-9]+$ ]]; then
+                echo "::error::Could not verify the previously published $track APK metadata."
+                exit 1
+              fi
+              if [ "$app_id" != "$previous_app_id" ]; then
+                echo "::error::$track applicationId changed from $previous_app_id to $app_id. Existing installations would not update in place."
+                exit 1
+              fi
+              if [ "$certificate" != "$previous_certificate" ]; then
+                echo "::error::$track signing certificate changed. Existing installations may reject this update; do not publish until signing migration is planned."
+                exit 1
+              fi
+              if [ "$version_code" -le "$previous_version_code" ]; then
+                echo "::error::$track versionCode ($version_code) must be higher than the latest published version ($previous_version_code)."
+                exit 1
+              fi
+
+              echo "$track update compatibility: passed (applicationId and signing certificate unchanged; versionCode increased)."
+            else
+              echo "No previous public Release exists; first-release continuity check skipped."
+            fi
+
+            {
+              echo "### $track APK"
+              echo "- applicationId: $app_id"
+              echo "- versionCode: $version_code"
+              echo "- versionName: $version_name"
+              echo "- signingCertificateSha256: $certificate"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::endgroup::"
+          }
+
+          # Debug and release are separate installation tracks. They may use
+          # different certificates, so compare each only with its own previous APK.
+          verify_track "Debug" "dist/notifyIOS27-debug.apk" "notifyIOS27-debug.apk"
+          verify_track "Release" "dist/notifyIOS27-release.apk" "notifyIOS27-release.apk"
 
       - name: Generate APK checksums
         shell: bash
