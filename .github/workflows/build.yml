@@ -1,90 +1,263 @@
 name: Build APK
+
 on:
   push:
-    paths: ['app.zip']
+    branches: [main, dev]
+    paths:
+      - app.zip
+      - .github/workflows/build.yml
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish a GitHub Release (main branch only)
+        required: false
+        default: false
+        type: boolean
+
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: notifyios27-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      publish_release: ${{ steps.publication.outputs.publish_release }}
     steps:
-      - uses: actions/checkout@v6
-      - name: Unzip project
-        run: unzip -q app.zip -d proj
-      - name: Restore fixed debug key (keeps updates installable)
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate and extract Android project
+        shell: bash
         run: |
+          set -euo pipefail
+          test -s app.zip || { echo "::error::app.zip is missing or empty"; exit 1; }
+          mkdir -p proj
+          unzip -q app.zip -d proj
+          test -d proj/app || { echo "::error::The archive must contain an app/ Gradle module"; exit 1; }
+
+      - name: Restore the existing signing key
+        shell: bash
+        run: |
+          set -euo pipefail
           KEY_B64=""
-          if [ -f .android/debug.keystore.b64 ]; then
-            KEY_B64=".android/debug.keystore.b64"
-          elif [ -f .android/debug.keystore/debug.keystore.b64 ]; then
-            KEY_B64=".android/debug.keystore/debug.keystore.b64"
-          elif [ -f debug.keystore.b64 ]; then
-            KEY_B64="debug.keystore.b64"
+          for candidate in .android/debug.keystore.b64 .android/debug.keystore/debug.keystore.b64 debug.keystore.b64; do
+            if [ -s "$candidate" ]; then
+              KEY_B64="$candidate"
+              break
+            fi
+          done
+          if [ -z "$KEY_B64" ]; then
+            echo "::error::The established signing key is missing. Refusing to generate a new key because installed copies would no longer accept updates."
+            exit 1
           fi
-          if [ -n "$KEY_B64" ]; then
-            mkdir -p "$HOME/.android"
-            base64 -d "$KEY_B64" > "$HOME/.android/debug.keystore"
-            echo "Restored keystore from $KEY_B64"
-          else
-            echo "Warning: no debug.keystore.b64 found"
-          fi
-      - name: Install Gradle 8.14.2
+
+          mkdir -p "$HOME/.android"
+          base64 --decode "$KEY_B64" > "$HOME/.android/debug.keystore"
+          test -s "$HOME/.android/debug.keystore"
+          echo "Restored the existing app-signing identity for update compatibility."
+
+      - name: Install verified Gradle 8.14.2
+        shell: bash
         run: |
-          curl -fsSL https://services.gradle.org/distributions/gradle-8.14.2-bin.zip -o gradle.zip
+          set -euo pipefail
+          GRADLE_VERSION="8.14.2"
+          GRADLE_SHA256="7197a12f450794931532469d4ff21a59ea2c1cd59a3ec3f89c035c3c420a6999"
+          curl --fail --location --silent --show-error "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o gradle.zip
+          echo "${GRADLE_SHA256}  gradle.zip" | sha256sum --check -
           unzip -q gradle.zip -d "$HOME"
-          echo "$HOME/gradle-8.14.2/bin" >> "$GITHUB_PATH"
+          echo "$HOME/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+
       - name: Build debug APK
         working-directory: proj
         run: gradle assembleDebug --no-daemon --stacktrace
-      - name: Find and rename debug APK
-        run: |
-          APK=$(find proj/app/build/outputs/apk/debug -name "*.apk" | head -1)
-          if [ -z "$APK" ]; then
-            echo "No debug APK found"
-            exit 1
-          fi
-          TARGET="proj/app/build/outputs/apk/debug/notifyIOS27-debug.apk"
-          if [ "$APK" != "$TARGET" ]; then
-            mv "$APK" "$TARGET"
-            echo "Renamed to notifyIOS27-debug.apk"
-          else
-            echo "Already named notifyIOS27-debug.apk"
-          fi
-      - uses: actions/upload-artifact@v6
-        with:
-          name: notifyIOS27-apk
-          path: proj/app/build/outputs/apk/debug/notifyIOS27-debug.apk
-      - name: Build release APK (same fixed key, not debuggable)
-        id: rel
-        continue-on-error: true
+
+      - name: Build release APK
         working-directory: proj
         run: gradle assembleRelease --no-daemon --stacktrace
-      - name: Find and rename release APK
-        if: steps.rel.outcome == 'success'
+
+      - name: Collect APKs
+        shell: bash
         run: |
-          APK=$(find proj/app/build/outputs/apk/release -name "*.apk" | head -1)
-          if [ -n "$APK" ]; then
-            TARGET="proj/app/build/outputs/apk/release/notifyIOS27-release.apk"
-            if [ "$APK" != "$TARGET" ]; then
-              mv "$APK" "$TARGET"
-              echo "Renamed to notifyIOS27-release.apk"
-            else
-              echo "Already named notifyIOS27-release.apk"
-            fi
+          set -euo pipefail
+          mkdir -p dist
+
+          mapfile -t DEBUG_APKS < <(find proj/app/build/outputs/apk/debug -type f -name '*.apk' -print)
+          mapfile -t RELEASE_APKS < <(find proj/app/build/outputs/apk/release -type f -name '*.apk' -print)
+
+          if [ "${#DEBUG_APKS[@]}" -ne 1 ]; then
+            printf 'Expected exactly one debug APK; found %s\n' "${#DEBUG_APKS[@]}"
+            printf '%s\n' "${DEBUG_APKS[@]}"
+            exit 1
           fi
-      - uses: actions/upload-artifact@v6
-        if: steps.rel.outcome == 'success'
+          if [ "${#RELEASE_APKS[@]}" -ne 1 ]; then
+            printf 'Expected exactly one release APK; found %s\n' "${#RELEASE_APKS[@]}"
+            printf '%s\n' "${RELEASE_APKS[@]}"
+            exit 1
+          fi
+
+          install -m 0644 "${DEBUG_APKS[0]}" dist/notifyIOS27-debug.apk
+          install -m 0644 "${RELEASE_APKS[0]}" dist/notifyIOS27-release.apk
+          test -s dist/notifyIOS27-debug.apk
+          test -s dist/notifyIOS27-release.apk
+
+      - name: Verify package identity and update signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [ -z "$SDK_ROOT" ] || [ ! -d "$SDK_ROOT/build-tools" ]; then
+            echo "::error::Android SDK build-tools were not found on the runner."
+            exit 1
+          fi
+
+          APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          AAPT="$(find "$SDK_ROOT/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          if [ -z "$APKSIGNER" ] || [ -z "$AAPT" ]; then
+            echo "::error::apksigner or aapt is missing from Android build-tools."
+            exit 1
+          fi
+
+          DEBUG_APK="dist/notifyIOS27-debug.apk"
+          RELEASE_APK="dist/notifyIOS27-release.apk"
+
+          "$APKSIGNER" verify --verbose "$DEBUG_APK"
+          "$APKSIGNER" verify --verbose "$RELEASE_APK"
+
+          DEBUG_CERT="$("$APKSIGNER" verify --print-certs "$DEBUG_APK" 2>&1 | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1)"
+          RELEASE_CERT="$("$APKSIGNER" verify --print-certs "$RELEASE_APK" 2>&1 | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1)"
+          if [ -z "$DEBUG_CERT" ] || [ -z "$RELEASE_CERT" ] || [ "$DEBUG_CERT" != "$RELEASE_CERT" ]; then
+            echo "::error::Debug and release APKs do not share the established signing certificate. Refusing to publish incompatible updates."
+            exit 1
+          fi
+
+          DEBUG_BADGING="$("$AAPT" dump badging "$DEBUG_APK")"
+          RELEASE_BADGING="$("$AAPT" dump badging "$RELEASE_APK")"
+          read_manifest_value() {
+            local badging="$1"
+            local field="$2"
+            printf '%s\n' "$badging" | sed -n "s/^package:.*${field}='\([^']*\)'.*/\1/p" | head -n 1
+          }
+
+          DEBUG_APP_ID="$(read_manifest_value "$DEBUG_BADGING" name)"
+          RELEASE_APP_ID="$(read_manifest_value "$RELEASE_BADGING" name)"
+          DEBUG_VERSION_CODE="$(read_manifest_value "$DEBUG_BADGING" versionCode)"
+          RELEASE_VERSION_CODE="$(read_manifest_value "$RELEASE_BADGING" versionCode)"
+          DEBUG_VERSION_NAME="$(read_manifest_value "$DEBUG_BADGING" versionName)"
+          RELEASE_VERSION_NAME="$(read_manifest_value "$RELEASE_BADGING" versionName)"
+
+          if [ -z "$DEBUG_APP_ID" ] || [ -z "$DEBUG_VERSION_CODE" ] || [ -z "$DEBUG_VERSION_NAME" ]; then
+            echo "::error::Could not read package metadata from the debug APK."
+            exit 1
+          fi
+          if [ "$DEBUG_APP_ID" != "$RELEASE_APP_ID" ] ||
+             [ "$DEBUG_VERSION_CODE" != "$RELEASE_VERSION_CODE" ] ||
+             [ "$DEBUG_VERSION_NAME" != "$RELEASE_VERSION_NAME" ]; then
+            echo "::error::Debug and release APK metadata differ. Check applicationId and version configuration."
+            exit 1
+          fi
+          if ! [[ "$DEBUG_VERSION_CODE" =~ ^[0-9]+$ ]] || [ "$DEBUG_VERSION_CODE" -lt 1 ]; then
+            echo "::error::The APK versionCode is invalid."
+            exit 1
+          fi
+
+          {
+            echo "applicationId=$DEBUG_APP_ID"
+            echo "versionCode=$DEBUG_VERSION_CODE"
+            echo "versionName=$DEBUG_VERSION_NAME"
+            echo "signingCertificateSha256=$DEBUG_CERT"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate APK checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            sha256sum notifyIOS27-debug.apk notifyIOS27-release.apk > SHA256SUMS.txt
+          )
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: notifyIOS27-apk-release
-          path: proj/app/build/outputs/apk/release/notifyIOS27-release.apk
-      - name: Publish release
-        continue-on-error: true
+          name: notifyIOS27-apks-${{ github.run_number }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+      - name: Decide whether this run may publish
+        id: publication
+        shell: bash
+        env:
+          PUBLISH_RELEASE_INPUT: ${{ inputs.publish_release }}
+        run: |
+          set -euo pipefail
+          PUBLISH="false"
+
+          if [ "$GITHUB_EVENT_NAME" = "push" ] &&
+             [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            if git diff --name-only "$GITHUB_EVENT_BEFORE" "$GITHUB_SHA" -- app.zip | grep -Fxq 'app.zip'; then
+              PUBLISH="true"
+            fi
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
+               [ "$GITHUB_REF" = "refs/heads/main" ] &&
+               [ "$PUBLISH_RELEASE_INPUT" = "true" ]; then
+            PUBLISH="true"
+          fi
+
+          echo "publish_release=$PUBLISH" >> "$GITHUB_OUTPUT"
+          if [ "$PUBLISH" = "true" ]; then
+            echo "This main-branch run is allowed to publish a GitHub Release."
+          else
+            echo "Build-only run: no public GitHub Release will be created."
+          fi
+
+  publish:
+    name: publish
+    needs: build
+    if: needs.build.outputs.publish_release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified APK artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: notifyIOS27-apks-${{ github.run_number }}
+          path: release
+
+      - name: Publish or update this run's release
         env:
           GH_TOKEN: ${{ github.token }}
+          RUN_NUMBER: ${{ github.run_number }}
+          COMMIT_SHA: ${{ github.sha }}
+        shell: bash
         run: |
-          FILES=""
-          if [ -f proj/app/build/outputs/apk/debug/notifyIOS27-debug.apk ]; then FILES="$FILES proj/app/build/outputs/apk/debug/notifyIOS27-debug.apk"; fi
-          if [ -f proj/app/build/outputs/apk/release/notifyIOS27-release.apk ]; then FILES="$FILES proj/app/build/outputs/apk/release/notifyIOS27-release.apk"; fi
-          if [ -z "$FILES" ]; then echo "No APK to publish"; exit 0; fi
-          gh release create "build-${{ github.run_number }}" $FILES --title "notifyIOS27 build ${{ github.run_number }}" --notes "Debug and release APK"
+          set -euo pipefail
+          TAG="build-${RUN_NUMBER}"
+          TITLE="NotifyIOS27 build ${RUN_NUMBER}"
+          NOTES="Automated APK build from commit ${COMMIT_SHA}.\n\nThe workflow verifies that debug and release APKs have matching application IDs, version metadata, and signing certificates.\n\nFiles:\n- notifyIOS27-release.apk: release build\n- notifyIOS27-debug.apk: debug build\n- SHA256SUMS.txt: SHA-256 checksums\n\nInstall updates only when the installed app ID and signing identity match and the new versionCode is not lower."
+
+          test -s release/notifyIOS27-debug.apk
+          test -s release/notifyIOS27-release.apk
+          test -s release/SHA256SUMS.txt
+          (cd release && sha256sum --check SHA256SUMS.txt)
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/notifyIOS27-debug.apk release/notifyIOS27-release.apk release/SHA256SUMS.txt --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" release/notifyIOS27-debug.apk release/notifyIOS27-release.apk release/SHA256SUMS.txt --title "$TITLE" --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
+          fi
