@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      accept_signing_migration:
+        description: Accept a one-time signing-certificate change (requires publishing a release)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -32,6 +37,7 @@ jobs:
       contents: read
     outputs:
       publish_release: ${{ steps.publication.outputs.publish_release }}
+      signing_migration: ${{ steps.verify.outputs.signing_migration }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -140,11 +146,14 @@ jobs:
           grep -RIlE 'signingConfig|storeFile|keyAlias|storePassword|keyPassword' proj --include='*.gradle' --include='*.gradle.kts' --exclude-dir=.gradle || true
 
       - name: Verify APK signatures and update continuity
+        id: verify
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          ACCEPT_SIGNING_MIGRATION: ${{ inputs.accept_signing_migration }}
         run: |
           set -euo pipefail
+          echo "signing_migration=false" >> "$GITHUB_OUTPUT"
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           if [ -z "$SDK_ROOT" ] || [ ! -d "$SDK_ROOT/build-tools" ]; then
             echo "::error::Android SDK build-tools were not found on the runner."
@@ -251,8 +260,15 @@ jobs:
                 exit 1
               fi
               if [ "$certificate" != "$previous_certificate" ]; then
-                echo "::error::$track signing certificate changed (current: $certificate; previous: $previous_certificate). Existing installations may reject this update; do not publish until signing migration is planned."
-                exit 1
+                if [ "${ACCEPT_SIGNING_MIGRATION:-false}" = "true" ] &&
+                   [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
+                   [ "$GITHUB_REF" = "refs/heads/main" ]; then
+                  echo "::warning::$track signing certificate changed from $previous_certificate to $certificate. This is an explicitly accepted signing migration; existing installations may need to be uninstalled before installing this APK, and local app data may be lost."
+                  echo "signing_migration=true" >> "$GITHUB_OUTPUT"
+                else
+                  echo "::error::$track signing certificate changed (current: $certificate; previous: $previous_certificate). To accept a deliberate key change, manually run this workflow on main with both 'accept_signing_migration' and 'publish_release' enabled."
+                  exit 1
+                fi
               fi
               if [ "$version_code" -le "$previous_version_code" ]; then
                 echo "::error::$track versionCode ($version_code) must be higher than the latest published version ($previous_version_code)."
@@ -303,6 +319,7 @@ jobs:
         shell: bash
         env:
           PUBLISH_RELEASE_INPUT: ${{ inputs.publish_release }}
+          ACCEPT_SIGNING_MIGRATION: ${{ inputs.accept_signing_migration }}
         run: |
           set -euo pipefail
           PUBLISH="false"
@@ -316,6 +333,11 @@ jobs:
                [ "$GITHUB_REF" = "refs/heads/main" ] &&
                [ "$PUBLISH_RELEASE_INPUT" = "true" ]; then
             PUBLISH="true"
+          fi
+
+          if [ "${ACCEPT_SIGNING_MIGRATION:-false}" = "true" ] && [ "$PUBLISH" != "true" ]; then
+            echo "::error::A signing migration must be published in the same workflow run. Enable 'publish_release' as well."
+            exit 1
           fi
 
           echo "publish_release=$PUBLISH" >> "$GITHUB_OUTPUT"
@@ -344,12 +366,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_NUMBER: ${{ github.run_number }}
           COMMIT_SHA: ${{ github.sha }}
+          SIGNING_MIGRATION: ${{ needs.build.outputs.signing_migration }}
         shell: bash
         run: |
           set -euo pipefail
           TAG="build-${RUN_NUMBER}"
           TITLE="NotifyIOS27 build ${RUN_NUMBER}"
           NOTES="Automated APK build from commit ${COMMIT_SHA}.\n\nThe workflow verifies each APK against its own previously published variant. Debug and release APKs may use different signing certificates; do not switch an installed app between variants.\n\nFiles:\n- notifyIOS27-release.apk: release build\n- notifyIOS27-debug.apk: debug build\n- SHA256SUMS.txt: SHA-256 checksums\n\nInstall updates only when the installed app ID and signing identity match and the new versionCode is not lower."
+          if [ "${SIGNING_MIGRATION:-false}" = "true" ]; then
+            NOTES="$(printf '%s\n\n%s' "$NOTES" "WARNING: This release intentionally uses a new signing certificate. Android may reject updates over older installs; uninstalling the old app and installing this APK may be required. Uninstalling can erase local app data.")"
+          fi
 
           test -s release/notifyIOS27-debug.apk
           test -s release/notifyIOS27-release.apk
