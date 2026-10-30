@@ -150,9 +150,9 @@ jobs:
             local badging="$1"
             local field="$2"
             case "$field" in
-              name) printf '%s\\n' "$badging" | sed -n "s/^package: name='\\([^']*\\)'.*/\\1/p" | head -n 1 ;;
-              versionCode) printf '%s\\n' "$badging" | sed -n "s/^package:.*versionCode='\\([^']*\\)'.*/\\1/p" | head -n 1 ;;
-              versionName) printf '%s\\n' "$badging" | sed -n "s/^package:.*versionName='\\([^']*\\)'.*/\\1/p" | head -n 1 ;;
+              name) printf '%s\n' "$badging" | sed -n "s/^package: name='\\([^']*\\)'.*/\\1/p" | head -n 1 ;;
+              versionCode) printf '%s\n' "$badging" | sed -n "s/^package:.*versionCode='\\([^']*\\)'.*/\\1/p" | head -n 1 ;;
+              versionName) printf '%s\n' "$badging" | sed -n "s/^package:.*versionName='\\([^']*\\)'.*/\\1/p" | head -n 1 ;;
               *) return 1 ;;
             esac
           }
@@ -193,7 +193,7 @@ jobs:
               exit 1
             fi
 
-            printf '%s\\n' "$badging" | grep '^package:' || true
+            printf '%s\n' "$badging" | grep '^package:' || true
             echo "$track applicationId: $app_id"
             echo "$track versionCode: $version_code"
             echo "$track versionName: $version_name"
