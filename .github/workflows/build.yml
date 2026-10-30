@@ -71,7 +71,9 @@ jobs:
           else
             echo "::warning::Could not inspect the restored debug keystore with the default Android debug password."
           fi
-          echo "Restored the existing app-signing identity for update compatibility."
+          echo "ANDROID_USER_HOME=$HOME/.android" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_HOME=$HOME" >> "$GITHUB_ENV"
+          echo "Restored the existing app-signing identity and pinned the Android SDK user-config directory."
 
       - name: Install verified Gradle 8.14.2
         shell: bash
@@ -83,6 +85,16 @@ jobs:
           echo "${GRADLE_SHA256}  gradle.zip" | sha256sum --check -
           unzip -q gradle.zip -d "$HOME"
           echo "$HOME/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Report Android variant signing configuration
+        working-directory: proj
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HOME=$HOME"
+          echo "ANDROID_USER_HOME=${ANDROID_USER_HOME:-unset}"
+          echo "ANDROID_SDK_HOME=${ANDROID_SDK_HOME:-unset}"
+          gradle signingReport --no-daemon --stacktrace
 
       - name: Build debug APK
         working-directory: proj
