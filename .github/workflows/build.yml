@@ -122,10 +122,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "Keystore files inside the app archive:"
-          find proj -type f \\( -iname '*.jks' -o -iname '*.keystore' \\) -print || true
+          find proj -type f -name '*.jks' -print || true
+          find proj -type f -name '*.keystore' -print || true
           echo "Gradle files containing signing configuration (paths only):"
-          grep -RIlE 'signingConfig|storeFile|keyAlias|storePassword|keyPassword' proj \\
-            --include='*.gradle' --include='*.gradle.kts' --exclude-dir=.gradle || true
+          grep -RIlE 'signingConfig|storeFile|keyAlias|storePassword|keyPassword' proj --include='*.gradle' --include='*.gradle.kts' --exclude-dir=.gradle || true
 
       - name: Verify APK signatures and update continuity
         shell: bash
@@ -149,7 +149,12 @@ jobs:
           read_manifest_value() {
             local badging="$1"
             local field="$2"
-            printf '%s\n' "$badging" | sed -n "s/^package:.*${field}='\\([^']*\\)'.*/\\1/p" | head -n 1
+            case "$field" in
+              name) printf '%s\\n' "$badging" | sed -n "s/^package: name='\\([^']*\\)'.*/\\1/p" | head -n 1 ;;
+              versionCode) printf '%s\\n' "$badging" | sed -n "s/^package:.*versionCode='\\([^']*\\)'.*/\\1/p" | head -n 1 ;;
+              versionName) printf '%s\\n' "$badging" | sed -n "s/^package:.*versionName='\\([^']*\\)'.*/\\1/p" | head -n 1 ;;
+              *) return 1 ;;
+            esac
           }
 
           verify_track() {
