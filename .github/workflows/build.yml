@@ -66,6 +66,11 @@ jobs:
           mkdir -p "$HOME/.android"
           base64 --decode "$KEY_B64" > "$HOME/.android/debug.keystore"
           test -s "$HOME/.android/debug.keystore"
+          if keytool -list -v -keystore "$HOME/.android/debug.keystore" -storepass android > "$RUNNER_TEMP/debug-keystore-info.txt" 2>&1; then
+            grep -E 'Alias name:|SHA256:' "$RUNNER_TEMP/debug-keystore-info.txt" || true
+          else
+            echo "::warning::Could not inspect the restored debug keystore with the default Android debug password."
+          fi
           echo "Restored the existing app-signing identity for update compatibility."
 
       - name: Install verified Gradle 8.14.2
@@ -111,6 +116,16 @@ jobs:
           install -m 0644 "${RELEASE_APKS[0]}" dist/notifyIOS27-release.apk
           test -s dist/notifyIOS27-debug.apk
           test -s dist/notifyIOS27-release.apk
+
+      - name: Inspect project signing configuration (paths only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Keystore files inside the app archive:"
+          find proj -type f \\( -iname '*.jks' -o -iname '*.keystore' \\) -print || true
+          echo "Gradle files containing signing configuration (paths only):"
+          grep -RIlE 'signingConfig|storeFile|keyAlias|storePassword|keyPassword' proj \\
+            --include='*.gradle' --include='*.gradle.kts' --exclude-dir=.gradle || true
 
       - name: Verify APK signatures and update continuity
         shell: bash
@@ -173,6 +188,7 @@ jobs:
               exit 1
             fi
 
+            printf '%s\\n' "$badging" | grep '^package:' || true
             echo "$track applicationId: $app_id"
             echo "$track versionCode: $version_code"
             echo "$track versionName: $version_name"
@@ -208,12 +224,17 @@ jobs:
                 echo "::error::Could not verify the previously published $track APK metadata."
                 exit 1
               fi
+              printf '%s\\n' "$previous_badging" | grep '^package:' || true
+              echo "$track previous applicationId: $previous_app_id"
+              echo "$track previous versionCode: $previous_version_code"
+              echo "$track previous signingCertificateSha256: $previous_certificate"
+
               if [ "$app_id" != "$previous_app_id" ]; then
                 echo "::error::$track applicationId changed from $previous_app_id to $app_id. Existing installations would not update in place."
                 exit 1
               fi
               if [ "$certificate" != "$previous_certificate" ]; then
-                echo "::error::$track signing certificate changed. Existing installations may reject this update; do not publish until signing migration is planned."
+                echo "::error::$track signing certificate changed (current: $certificate; previous: $previous_certificate). Existing installations may reject this update; do not publish until signing migration is planned."
                 exit 1
               fi
               if [ "$version_code" -le "$previous_version_code" ]; then
