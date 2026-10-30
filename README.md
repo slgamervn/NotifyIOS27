@@ -61,7 +61,7 @@ Each Release contains:
 - `notifyIOS27-debug.apk` — debug/testing variant
 - `SHA256SUMS.txt` — checksums for both APK files
 
-Before installing an update, Android requires the same application ID and compatible signing identity, and the update's `versionCode` must not be lower than the installed version. Keep the application ID and signing identity stable, and increase `versionCode` for every update. The workflow verifies that the two APK variants from one build have matching identity and version metadata; it does not replace device-level installation testing.
+Before installing an update, Android requires the same application ID and compatible signing identity, and the update's `versionCode` must be higher than the installed version. Keep the application ID and signing identity stable, and increase `versionCode` for every update. The workflow verifies each APK against its own previously published variant: the debug APK is compared with the previous debug APK, and the release APK with the previous release APK. Debug and release may use different signing certificates; do not switch an installation between variants. A successful CI check does not replace device-level installation testing.
 
 ### Signing-key limitation
 
