@@ -316,7 +316,7 @@ jobs:
             exit 1
           fi
           "$AAPT" dump badging dist/notifyIOS27-release.apk > "$RUNNER_TEMP/notifyios27-release-badging.txt"
-          python3 - "$RUNNER_TEMP/notifyios27-release-badging.txt" "$GITHUB_REPOSITORY" <<\x27PY\x27
+          python3 - "$RUNNER_TEMP/notifyios27-release-badging.txt" "$GITHUB_REPOSITORY" <<'PY'
           import json
           import re
           import sys
@@ -339,7 +339,7 @@ jobs:
               "force": False,
           }
           Path("dist/notifyIOS27-update.json").write_text(
-              json.dumps(payload, ensure_ascii=False, indent=2) + "\\n",
+              json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
               encoding="utf-8",
           )
           PY
