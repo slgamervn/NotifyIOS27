@@ -47,6 +47,26 @@ APK outputs:
 - `app/build/outputs/apk/debug/notifyIOS27-debug.apk`
 - `app/build/outputs/apk/release/notifyIOS27-release.apk`
 
+## Updates and releases
+
+The Android build is split into a test path and a production-release path:
+
+1. Push an updated `app.zip` to `dev`. GitHub Actions builds both APK variants, checks that they use the same application ID, version metadata, and signing certificate, then uploads a short-lived Actions artifact. It does **not** create a public Release.
+2. Open a pull request from `dev` to `main`. The same build checks run on the pull request. Review the result before merging.
+3. Merge the tested `app.zip` change into `main`. A successful build creates or updates the matching `build-N` GitHub Release.
+4. Manual workflow runs are build-only by default. The optional publish switch is available only when the workflow is run from `main`.
+
+Each Release contains:
+- `notifyIOS27-release.apk` — release variant
+- `notifyIOS27-debug.apk` — debug/testing variant
+- `SHA256SUMS.txt` — checksums for both APK files
+
+Before installing an update, Android requires the same application ID and compatible signing identity, and the update's `versionCode` must not be lower than the installed version. Keep the application ID and signing identity stable, and increase `versionCode` for every update. The workflow verifies that the two APK variants from one build have matching identity and version metadata; it does not replace device-level installation testing.
+
+### Signing-key limitation
+
+The current workflow restores a fixed, repository-shared **debug signing key** so existing installations can continue to accept updates. Android's documentation states that debug certificates are insecure by design and are not appropriate as a production app-signing identity. Because this key material is stored in a public repository, these APKs should be treated as test/distribution builds, not as a securely authenticated production release or a Play Store release. Do not remove or rotate the existing key casually: doing so can make already-installed copies reject future updates. A proper private release key requires a planned signing-key migration for existing users.
+
 ## Usage
 
 1. Grant the required permissions during onboarding
