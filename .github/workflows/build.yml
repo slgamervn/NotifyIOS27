@@ -129,13 +129,43 @@ jobs:
           test -s dist/notifyIOS27-debug.apk
           test -s dist/notifyIOS27-release.apk
 
-      - name: Inspect project signing configuration (paths only)
+      - name: Reject signing stores embedded in app archive
         shell: bash
         run: |
           set -euo pipefail
-          echo "Keystore files inside the app archive:"
-          find proj -type f -name '*.jks' -print || true
-          find proj -type f -name '*.keystore' -print || true
+
+          find_signing_store_files() {
+            local root="$1"
+            find "$root" -type f \\(
+              -iname '*.jks*' -o
+              -iname '*.keystore*' -o
+              -iname '*.p12*' -o
+              -iname '*.pfx*'
+            \\) -print | sort -u
+          }
+
+          # Verify the filename detector with synthetic fixtures.
+          fixture="$(mktemp -d)"
+          trap 'rm -rf "$fixture"' EXIT
+          mkdir -p "$fixture/nested"
+          : > "$fixture/nested/fake-release.keystore.b64"
+          : > "$fixture/nested/fake-upload.p12"
+          fixture_findings="$(find_signing_store_files "$fixture")"
+          if ! printf '%s\\n' "$fixture_findings" | grep -Fq 'fake-release.keystore.b64' ||
+             ! printf '%s\\n' "$fixture_findings" | grep -Fq 'fake-upload.p12'; then
+            echo "::error::Signing-store detector self-test failed."
+            exit 1
+          fi
+          echo "Signing-store detector self-test passed."
+
+          source_findings="$(find_signing_store_files proj)"
+          if [ -n "$source_findings" ]; then
+            echo "::error::Signing stores must not be embedded in app.zip. Detected paths:"
+            printf '%s\\n' "$source_findings"
+            exit 1
+          fi
+          echo "No signing-store files found inside the extracted app archive."
+
           echo "Gradle files containing signing configuration (paths only):"
           grep -RIlE 'signingConfig|storeFile|keyAlias|storePassword|keyPassword' proj --include='*.gradle' --include='*.gradle.kts' --exclude-dir=.gradle || true
 
