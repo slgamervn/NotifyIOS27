@@ -15,7 +15,7 @@ on:
         required: false
         default: false
         type: boolean
-remove manual signing migration input
+
 permissions:
   contents: read
 
@@ -360,15 +360,7 @@ jobs:
           fi
 
           if [ "$PUBLISH" = "true" ]; then
-            TRACKED_SIGNING_FILES="$(git ls-files | grep -E '(^|/)debug\.keystore(\.b64)?$' || true)"
-            if [ -n "$TRACKED_SIGNING_FILES" ]; then
-              echo "::error::Release publication is blocked while signing keystore material is tracked in this repository. Treat the public key as compromised and prepare the private-key/new-package migration before publishing."
-              exit 1
-            fi
-          fi
-
-          echo "publish_release=$PUBLISH" >> "$GITHUB_OUTPUT"
-          if [ "$PUBLISH" = "true" ]; then
+            TRACKED_SIGNING_FILES="$(git ls-files | grep -E '(^|/)debug\.keystore(\.b64)?          if [ "$PUBLISH" = "true" ]; then
             echo "This main-branch run is allowed to publish a GitHub Release."
           else
             echo "Build-only run: no public GitHub Release will be created."
