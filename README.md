@@ -37,10 +37,13 @@ NotifyIOS27 brings clean, floating notification banners and a Dynamic Island-sty
 The project is packaged as `app.zip` for GitHub Actions builds.
 
 ```bash
-# Unzip and build locally
+# Requires JDK 17, Android SDK, and system Gradle 8.14.2
 unzip app.zip -d proj
 cd proj
-./gradlew assembleRelease
+gradle --version
+gradle assembleDebug --no-daemon
+
+The source archive does not include a Gradle Wrapper. The GitHub Actions workflow installs and verifies Gradle 8.14.2. Release signing is controlled by the repository workflow; do not create or replace a signing key casually.
 ```
 
 APK outputs:
@@ -60,6 +63,8 @@ Each Release contains:
 - `notifyIOS27-release.apk` — release variant
 - `notifyIOS27-debug.apk` — debug/testing variant
 - `SHA256SUMS.txt` — checksums for both APK files
+
+The in-app updater only accepts the official HTTPS GitHub Release APK URL. Before opening Android's package installer, it downloads the matching `SHA256SUMS.txt`, verifies the release APK's SHA-256 digest, checks the download size, and rejects incomplete or mismatched files. Android then performs its own package/signature compatibility checks.
 
 Before installing an update, Android requires the same application ID and compatible signing identity, and the update's `versionCode` must be higher than the installed version. Keep the application ID and signing identity stable, and increase `versionCode` for every update. The workflow verifies each APK against its own previously published variant: the debug APK is compared with the previous debug APK, and the release APK with the previous release APK. Debug and release may use different signing certificates; do not switch an installation between variants. A successful CI check does not replace device-level installation testing.
 
