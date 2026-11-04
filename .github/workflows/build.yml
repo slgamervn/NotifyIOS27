@@ -360,11 +360,32 @@ jobs:
           fi
 
 
+          tracked_signing_files() {
+            git ls-files | grep -Ei '(^|/)(debug\.keystore(\.b64)?|[^/]+\.(jks|keystore|p12|pfx)(\.b64)?)$' || true
+          }
+
+          assert_safe_to_publish() {
+            local tracked
+            tracked="$(tracked_signing_files)"
+            if [ -n "$tracked" ]; then
+              echo "Tracked signing material detected:" >&2
+              printf '%s\n' "$tracked" >&2
+              return 1
+            fi
+            return 0
+          }
+
           if [ "$PUBLISH" = "true" ]; then
-            TRACKED_SIGNING_FILES="$(git ls-files | grep -E '(^|/)debug\.keystore(\.b64)?$' || true)"
-            if [ -n "$TRACKED_SIGNING_FILES" ]; then
+            if ! assert_safe_to_publish; then
               echo "::error::Release publication is blocked while signing keystore material is tracked in this repository. Treat the public key as compromised and prepare the private-key/new-package migration before publishing."
               exit 1
+            fi
+          elif [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/dev" ]; then
+            if assert_safe_to_publish; then
+              echo "::error::Publication guard self-test failed: expected tracked signing material to block a simulated publication."
+              exit 1
+            else
+              echo "Publication guard self-test passed: tracked signing material is rejected without publishing a Release."
             fi
           fi
 
