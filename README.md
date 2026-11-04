@@ -34,17 +34,19 @@ NotifyIOS27 brings clean, floating notification banners and a Dynamic Island-sty
 5. Follow the onboarding to grant Notification access and Display over other apps
 
 ### Build from source
+
 The project is packaged as `app.zip` for GitHub Actions builds.
 
+Requirements: JDK 17, Android SDK, and system Gradle 8.14.2.
+
 ```bash
-# Requires JDK 17, Android SDK, and system Gradle 8.14.2
 unzip app.zip -d proj
 cd proj
 gradle --version
 gradle assembleDebug --no-daemon
+```
 
 The source archive does not include a Gradle Wrapper. The GitHub Actions workflow installs and verifies Gradle 8.14.2. Release signing is controlled by the repository workflow; do not create or replace a signing key casually.
-```
 
 APK outputs:
 - `app/build/outputs/apk/debug/notifyIOS27-debug.apk`
