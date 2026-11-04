@@ -58,7 +58,7 @@ The Android build is split into a test path and a production-release path:
 
 1. Push an updated `app.zip` to `dev`. GitHub Actions builds both APK variants, checks that they use the same application ID, version metadata, and signing certificate, then uploads a short-lived Actions artifact. It does **not** create a public Release.
 2. Open a pull request from `dev` to `main`. The same build checks run on the pull request. Review the result before merging.
-3. Merge the tested `app.zip` change into `main`. A successful build creates or updates the matching `build-N` GitHub Release.
+3. Merge the tested `app.zip` change into `main` only after the signing migration is reviewed and the publication gate can pass. The workflow currently blocks Release publication while signing keystore material is tracked in the repository; a green build on `dev` or a pull request is an artifact-only test, not a public Release.
 4. Manual workflow runs are build-only by default. The optional publish switch is available only when the workflow is run from `main`.
 
 Each Release contains:
@@ -72,7 +72,11 @@ Before installing an update, Android requires the same application ID and compat
 
 ### Signing-key limitation
 
-The current workflow restores a fixed, repository-shared **debug signing key** so existing installations can continue to accept updates. Android's documentation states that debug certificates are insecure by design and are not appropriate as a production app-signing identity. Because this key material is stored in a public repository, these APKs should be treated as test/distribution builds, not as a securely authenticated production release or a Play Store release. Do not remove or rotate the existing key casually: doing so can make already-installed copies reject future updates. A proper private release key requires a planned signing-key migration for existing users.
+The current workflow restores a fixed, repository-shared **debug signing key** so existing installations can continue to accept updates. Android's documentation states that debug certificates are insecure by design and are not appropriate as a production app-signing identity. This key material is committed to the public repository and must be treated as compromised; deleting it from the current branch would not remove it from Git history. These APKs are therefore test/distribution builds, not securely authenticated production releases or Play Store builds. The workflow now blocks Release publication while recognized signing keystore files remain tracked. Do not remove or rotate the existing key casually: doing so can make already-installed copies reject future updates. The migration plan is tracked in [issue #2](https://github.com/slgamervn/NotifyIOS27/issues/2).
+
+### Backup limitations
+
+The built-in backup is **not a full app backup**. It currently exports only a limited subset of preferences. It does not include the on-device notification store, the notification-history database, custom wallpaper files, or separate health/island preference stores. Android permission grants and OS-scheduled work also cannot be restored as app data and must be set up again after reinstalling. Do not rely on the current export alone to migrate every local item to a separately signed installation; the complete transfer plan is tracked in [issue #2](https://github.com/slgamervn/NotifyIOS27/issues/2).
 
 ## Usage
 
