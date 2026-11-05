@@ -15,11 +15,6 @@ on:
         required: false
         default: false
         type: boolean
-      accept_signing_migration:
-        description: Accept a one-time signing-certificate change (requires publishing a release)
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -37,7 +32,6 @@ jobs:
       contents: read
     outputs:
       publish_release: ${{ steps.publication.outputs.publish_release }}
-      signing_migration: ${{ steps.verify.outputs.signing_migration }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -135,13 +129,38 @@ jobs:
           test -s dist/notifyIOS27-debug.apk
           test -s dist/notifyIOS27-release.apk
 
-      - name: Inspect project signing configuration (paths only)
+      - name: Reject signing stores embedded in app archive
         shell: bash
         run: |
           set -euo pipefail
-          echo "Keystore files inside the app archive:"
-          find proj -type f -name '*.jks' -print || true
-          find proj -type f -name '*.keystore' -print || true
+
+          find_signing_store_files() {
+            local root="$1"
+            find "$root" -type f \( -iname '*.jks*' -o -iname '*.keystore*' -o -iname '*.p12*' -o -iname '*.pfx*' \) -print | sort -u
+          }
+
+          # Verify the filename detector with synthetic fixtures.
+          fixture="$(mktemp -d)"
+          trap 'rm -rf "$fixture"' EXIT
+          mkdir -p "$fixture/nested"
+          : > "$fixture/nested/fake-release.keystore.b64"
+          : > "$fixture/nested/fake-upload.p12"
+          fixture_findings="$(find_signing_store_files "$fixture")"
+          if ! printf '%s\n' "$fixture_findings" | grep -Fq 'fake-release.keystore.b64' ||
+             ! printf '%s\n' "$fixture_findings" | grep -Fq 'fake-upload.p12'; then
+            echo "::error::Signing-store detector self-test failed."
+            exit 1
+          fi
+          echo "Signing-store detector self-test passed."
+
+          source_findings="$(find_signing_store_files proj)"
+          if [ -n "$source_findings" ]; then
+            echo "::error::Signing stores must not be embedded in app.zip. Detected paths:"
+            printf '%s\n' "$source_findings"
+            exit 1
+          fi
+          echo "No signing-store files found inside the extracted app archive."
+
           echo "Gradle files containing signing configuration (paths only):"
           grep -RIlE 'signingConfig|storeFile|keyAlias|storePassword|keyPassword' proj --include='*.gradle' --include='*.gradle.kts' --exclude-dir=.gradle || true
 
@@ -150,10 +169,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          ACCEPT_SIGNING_MIGRATION: ${{ inputs.accept_signing_migration }}
         run: |
           set -euo pipefail
-          echo "signing_migration=false" >> "$GITHUB_OUTPUT"
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           if [ -z "$SDK_ROOT" ] || [ ! -d "$SDK_ROOT/build-tools" ]; then
             echo "::error::Android SDK build-tools were not found on the runner."
@@ -260,15 +277,8 @@ jobs:
                 exit 1
               fi
               if [ "$certificate" != "$previous_certificate" ]; then
-                if [ "${ACCEPT_SIGNING_MIGRATION:-false}" = "true" ] &&
-                   [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
-                   [ "$GITHUB_REF" = "refs/heads/main" ]; then
-                  echo "::warning::$track signing certificate changed from $previous_certificate to $certificate. This is an explicitly accepted signing migration; existing installations may need to be uninstalled before installing this APK, and local app data may be lost."
-                  echo "signing_migration=true" >> "$GITHUB_OUTPUT"
-                else
-                  echo "::error::$track signing certificate changed (current: $certificate; previous: $previous_certificate). To accept a deliberate key change, manually run this workflow on main with both 'accept_signing_migration' and 'publish_release' enabled."
-                  exit 1
-                fi
+                echo "::error::$track signing certificate changed (current: $certificate; previous: $previous_certificate). Refusing to publish an in-place update with a different certificate. A reviewed signing-lineage or new-package migration must be implemented separately."
+                exit 1
               fi
               if [ "$version_code" -le "$previous_version_code" ]; then
                 echo "::error::$track versionCode ($version_code) must be higher than the latest published version ($previous_version_code)."
@@ -316,7 +326,7 @@ jobs:
             exit 1
           fi
           "$AAPT" dump badging dist/notifyIOS27-release.apk > "$RUNNER_TEMP/notifyios27-release-badging.txt"
-          python3 - "$RUNNER_TEMP/notifyios27-release-badging.txt" "$GITHUB_REPOSITORY" <<'PY'
+          python3 - "$RUNNER_TEMP/notifyios27-release-badging.txt" "$GITHUB_REPOSITORY" "$GITHUB_RUN_NUMBER" <<'PY'
           import json
           import re
           import sys
@@ -324,6 +334,10 @@ jobs:
 
           badging = Path(sys.argv[1]).read_text(encoding="utf-8")
           repository = sys.argv[2]
+          run_number = sys.argv[3]
+          if not run_number.isdigit() or int(run_number) < 1:
+              raise SystemExit("Invalid GitHub Actions run number for the Release tag")
+          release_tag = f"build-{int(run_number)}"
           version_code_match = re.search(r"versionCode=\x27([^\x27]+)\x27", badging)
           version_name_match = re.search(r"versionName=\x27([^\x27]+)\x27", badging)
           if not version_code_match or not version_code_match.group(1).isdigit() or not version_name_match:
@@ -334,7 +348,7 @@ jobs:
           payload = {
               "versionCode": version_code,
               "versionName": version_name,
-              "url": f"https://github.com/{repository}/releases/latest/download/notifyIOS27-release.apk",
+              "url": f"https://github.com/{repository}/releases/download/{release_tag}/notifyIOS27-release.apk",
               "notes": f"Bản mới nhất {version_name}. Tải và cài trực tiếp.",
               "force": False,
           }
@@ -344,6 +358,47 @@ jobs:
           )
           PY
           python3 -m json.tool dist/notifyIOS27-update.json > /dev/null
+          python3 - "$RUNNER_TEMP/notifyios27-release-badging.txt" "$GITHUB_REPOSITORY" "$GITHUB_RUN_NUMBER" dist/notifyIOS27-update.json <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          badging = Path(sys.argv[1]).read_text(encoding="utf-8")
+          repository = sys.argv[2]
+          run_number = sys.argv[3]
+          metadata_path = Path(sys.argv[4])
+          if not run_number.isdigit() or int(run_number) < 1:
+              raise SystemExit("Invalid run number")
+          package_match = re.search(r"^package: name='([^']+)'", badging, re.MULTILINE)
+          code_match = re.search(r"versionCode='([0-9]+)'", badging)
+          name_match = re.search(r"versionName='([^']+)'", badging)
+          if not package_match or not code_match or not name_match:
+              raise SystemExit("Release APK manifest metadata is incomplete")
+
+          metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+          expected_url = (
+              f"https://github.com/{repository}/releases/download/"
+              f"build-{int(run_number)}/notifyIOS27-release.apk"
+          )
+          expected = {
+              "versionCode": int(code_match.group(1)),
+              "versionName": name_match.group(1),
+              "url": expected_url,
+              "force": False,
+          }
+          for field, expected_value in expected.items():
+              if metadata.get(field) != expected_value:
+                  raise SystemExit(f"Update metadata mismatch: {field}")
+          if not re.fullmatch(
+              r"https://github\.com/slgamervn/NotifyIOS27/releases/download/"
+              r"build-[1-9][0-9]*/notifyIOS27-release\.apk",
+              metadata["url"],
+          ):
+              raise SystemExit("Update APK URL does not match the strict release URL format")
+          print("Update metadata validation passed: package/version and tag-pinned APK URL match the built release APK.")
+
+          PY
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -359,7 +414,6 @@ jobs:
         shell: bash
         env:
           PUBLISH_RELEASE_INPUT: ${{ inputs.publish_release }}
-          ACCEPT_SIGNING_MIGRATION: ${{ inputs.accept_signing_migration }}
         run: |
           set -euo pipefail
           PUBLISH="false"
@@ -375,9 +429,34 @@ jobs:
             PUBLISH="true"
           fi
 
-          if [ "${ACCEPT_SIGNING_MIGRATION:-false}" = "true" ] && [ "$PUBLISH" != "true" ]; then
-            echo "::error::A signing migration must be published in the same workflow run. Enable 'publish_release' as well."
-            exit 1
+
+          tracked_signing_files() {
+            git ls-files | grep -Ei '(^|/)(debug\.keystore(\.b64)?|[^/]+\.(jks|keystore|p12|pfx)(\.b64)?)$' || true
+          }
+
+          assert_safe_to_publish() {
+            local tracked
+            tracked="$(tracked_signing_files)"
+            if [ -n "$tracked" ]; then
+              echo "Tracked signing material detected:" >&2
+              printf '%s\n' "$tracked" >&2
+              return 1
+            fi
+            return 0
+          }
+
+          if [ "$PUBLISH" = "true" ]; then
+            if ! assert_safe_to_publish; then
+              echo "::error::Release publication is blocked while signing keystore material is tracked in this repository. Treat the public key as compromised and prepare the private-key/new-package migration before publishing."
+              exit 1
+            fi
+          elif [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/dev" ]; then
+            if assert_safe_to_publish; then
+              echo "::error::Publication guard self-test failed: expected tracked signing material to block a simulated publication."
+              exit 1
+            else
+              echo "Publication guard self-test passed: tracked signing material is rejected without publishing a Release."
+            fi
           fi
 
           echo "publish_release=$PUBLISH" >> "$GITHUB_OUTPUT"
@@ -406,16 +485,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_NUMBER: ${{ github.run_number }}
           COMMIT_SHA: ${{ github.sha }}
-          SIGNING_MIGRATION: ${{ needs.build.outputs.signing_migration }}
         shell: bash
         run: |
           set -euo pipefail
           TAG="build-${RUN_NUMBER}"
           TITLE="NotifyIOS27 build ${RUN_NUMBER}"
           NOTES="Automated APK build from commit ${COMMIT_SHA}.\n\nThe workflow verifies each APK against its own previously published variant. Debug and release APKs may use different signing certificates; do not switch an installed app between variants.\n\nFiles:\n- notifyIOS27-release.apk: release build\n- notifyIOS27-debug.apk: debug build\n- SHA256SUMS.txt: SHA-256 checksums\n- notifyIOS27-update.json: verified app version metadata for the website and in-app updater\n\nInstall updates only when the installed app ID and signing identity match and the new versionCode is not lower."
-          if [ "${SIGNING_MIGRATION:-false}" = "true" ]; then
-            NOTES="$(printf '%s\n\n%s' "$NOTES" "WARNING: This release intentionally uses a new signing certificate. Android may reject updates over older installs; uninstalling the old app and installing this APK may be required. Uninstalling can erase local app data.")"
-          fi
 
           test -s release/notifyIOS27-debug.apk
           test -s release/notifyIOS27-release.apk
