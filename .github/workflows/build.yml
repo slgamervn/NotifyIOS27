@@ -391,8 +391,8 @@ jobs:
               if metadata.get(field) != expected_value:
                   raise SystemExit(f"Update metadata mismatch: {field}")
           if not re.fullmatch(
-              r"https://github\\.com/slgamervn/NotifyIOS27/releases/download/"
-              r"build-[1-9][0-9]*/notifyIOS27-release\\.apk",
+              r"https://github\.com/slgamervn/NotifyIOS27/releases/download/"
+              r"build-[1-9][0-9]*/notifyIOS27-release\.apk",
               metadata["url"],
           ):
               raise SystemExit("Update APK URL does not match the strict release URL format")
